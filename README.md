@@ -3,10 +3,12 @@
 A portfolio-ready FinOps dashboard built with React, FastAPI and Boto3. It starts in **demo mode** with clearly labelled sample data. An optional read-only AWS scanner uses an assumed IAM role and temporary STS credentials.
 
 ## Features
-- Executive dashboard with monthly spend, category allocation and savings opportunities
+- Executive dashboard with six-month spend trends, service allocation, a sample monthly budget and savings opportunities
 - Resource audit for unattached EBS volumes, unassociated Elastic IPs, old snapshots and low-utilization EC2 instances
 - CSV export for audit findings
-- Demo mode (no AWS account required)
+- Demo mode (no AWS account or billable AWS resources required)
+- Dedicated `/api/demo` endpoint to restore the synthetic portfolio dataset at any time
+- Clear separation between live AWS inventory and illustrative demo cost metrics
 - Optional cross-account AWS scan using `AssumeRole`
 - Docker Compose development setup
 - CloudFormation template for a read-only scanner role
@@ -40,6 +42,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 API docs: http://localhost:8000/docs
+Demo dataset: http://localhost:8000/api/demo
 
 ### 2. Frontend
 Open another terminal:
@@ -50,7 +53,7 @@ npm run dev
 ```
 Open http://localhost:5173
 
-The UI uses demo data by default. To enable live AWS scanning, set the backend environment variables below and configure a role in your AWS account.
+The UI uses synthetic demo data by default. You can use the full dashboard, charts, budget indicator, sample inventory and CSV export without creating AWS resources. After a live inventory scan, choose **Restore demo data** to return to the sample dataset. The demo spend, budget, savings, carbon and resource examples are illustrative—not values retrieved from AWS Cost Explorer.
 
 ## Live AWS scanner configuration
 Set these variables in `backend/.env` (never commit this file):
@@ -67,7 +70,8 @@ Create the role from `infra/read-only-role.yaml`, replacing the trusted account 
 - Never paste AWS access keys into the frontend.
 - The app sends only the role ARN and external ID to the backend; use a trusted private deployment for real accounts.
 - Add authentication, rate limiting, audit logging, HTTPS and per-user authorization before exposing this API publicly.
-- The demo mode uses synthetic values. Estimated savings are indicative, not a bill-backed quote.
+- The demo mode uses synthetic values. Estimated savings, budget utilization, spend trends, carbon impact and sample inventory are not bill-backed AWS measurements.
+- In live inventory mode, resource findings come from AWS, but the spend and carbon KPIs remain illustrative demo estimates until AWS Cost Explorer and a verified emissions data source are integrated.
 - A detached volume or old snapshot is a review candidate, not proof that deletion is safe.
 
 ## Docker

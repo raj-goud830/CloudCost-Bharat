@@ -31,11 +31,63 @@ def demo_inventory():
         {"id":"i-0abc1234","type":"EC2 Instance","name":"staging-worker","region":"ap-south-1","status":"Low utilization","age_days":0,"monthly_cost":1850,"risk":"CPU average below 5% in sample window","recommendation":"Review schedule or right-size"}
     ]
 
+# Demo monthly cloud spending history
+demo_cost_history = [
+    {"month": "June", "cost": 38000},
+    {"month": "July", "cost": 41000},
+    {"month": "August", "cost": 42000},
+    {"month": "September", "cost": 45000},
+    {"month": "October", "cost": 47500},
+    {"month": "November", "cost": 68000},
+]
+
+
+def detect_cost_anomalies(history):
+    anomalies = []
+
+    for index in range(1, len(history)):
+        previous = history[index - 1]
+        current = history[index]
+
+        previous_cost = previous["cost"]
+        current_cost = current["cost"]
+
+        if previous_cost <= 0:
+            continue
+
+        percentage_change = (
+            (current_cost - previous_cost) / previous_cost
+        ) * 100
+
+        if percentage_change > 25:
+            anomalies.append({
+                "month": current["month"],
+                "previous_month": previous["month"],
+                "previous_cost": previous_cost,
+                "current_cost": current_cost,
+                "increase_amount": current_cost - previous_cost,
+                "percentage_increase": round(percentage_change, 2),
+                "severity": "High" if percentage_change >= 50 else "Medium",
+                "message": (
+                    f"Cloud spending increased by "
+                    f"{percentage_change:.2f}% compared to "
+                    f"{previous['month']}."
+                ),
+                "mode": "demo"
+            })
+
+    return anomalies
+
+
 def demo_dashboard():
     return {
         "mode":"demo",
         "currency":"INR",
         "monthly_spend": 68420,
+        "monthly_budget": 75000,
+        "previous_month_spend": 61800,
+        "month_over_month_change_pct": 10.7,
+        "budget_utilization_pct": 91.2,
         "potential_savings": 12860,
         "resources_scanned": 38,
         "findings": 4,
@@ -54,12 +106,30 @@ def demo_dashboard():
         "inventory":demo_inventory()
     }
 
+ 
+@app.get("/api/anomalies")
+def get_cost_anomalies():
+    anomalies = detect_cost_anomalies(demo_cost_history)
+
+    return {
+        "mode": "demo",
+        "threshold_percentage": 25,
+        "total_anomalies": len(anomalies),
+        "anomalies": anomalies
+    }
+   
+
 @app.get("/health")
 def health():
     return {"status":"ok","service":"cloudcost-bharat-api"}
 
 @app.get("/api/dashboard")
 def dashboard():
+    return demo_dashboard()
+
+@app.get("/api/demo")
+def load_demo_data():
+    """Return the synthetic portfolio dataset without contacting AWS."""
     return demo_dashboard()
 
 @app.get("/api/inventory")
@@ -172,3 +242,120 @@ def scan_aws(payload: ScanRequest):
         raise
     except (ClientError, BotoCoreError) as exc:
         raise HTTPException(status_code=502, detail=f"AWS scan failed: {str(exc)}")
+
+
+
+
+# ==========================================
+# COST OPTIMIZATION RECOMMENDATION ENGINE
+# ==========================================
+
+from typing import Any
+
+
+def generate_recommendations(items: list[dict[str, Any]]):
+
+    recommendations = []
+
+    for item in items:
+
+        resource_type = item.get("type", "")
+        status = item.get("status", "")
+        age_days = item.get("age_days", 0)
+        monthly_cost = float(item.get("monthly_cost", 0))
+
+        recommendation = None
+        priority = "Low"
+        estimated_savings = 0
+        issue = ""
+
+        # 1. Unattached EBS Volume
+        if resource_type == "EBS Volume" and status == "Unattached":
+
+            issue = "Unattached EBS Volume"
+            priority = "Medium"
+            estimated_savings = round(monthly_cost * 0.80, 2)
+            recommendation = (
+                "Verify backups and ownership. "
+                "Consider deleting only after approval."
+            )
+
+        # 2. Unassociated Elastic IP
+        elif resource_type == "Elastic IP" and status == "Unassociated":
+
+            issue = "Unassociated Elastic IP"
+            priority = "Medium"
+            estimated_savings = monthly_cost
+            recommendation = (
+                "Check DNS and failover dependencies. "
+                "Release the IP only after approval."
+            )
+
+        # 3. Old EBS Snapshot
+        elif resource_type == "EBS Snapshot" and age_days > 90:
+
+            issue = "Old EBS Snapshot"
+            priority = "Low"
+            estimated_savings = round(monthly_cost * 0.30, 2)
+            recommendation = (
+                "Review retention and compliance requirements "
+                "before removing the snapshot."
+            )
+
+        # 4. Low Utilization EC2
+        elif resource_type == "EC2 Instance" and status == "Low utilization":
+
+            issue = "Low EC2 Utilization"
+            priority = "High"
+            estimated_savings = round(monthly_cost * 0.40, 2)
+            recommendation = (
+                "Review CPU and workload patterns. "
+                "Consider right-sizing or scheduling."
+            )
+
+        if recommendation:
+
+            recommendations.append({
+                "resource_id": item.get("id"),
+                "resource_name": item.get("name"),
+                "resource_type": resource_type,
+                "region": item.get("region"),
+                "issue": issue,
+                "priority": priority,
+                "monthly_cost": monthly_cost,
+                "estimated_monthly_savings": estimated_savings,
+                "recommendation": recommendation,
+                "mode": "demo"
+            })
+
+    return recommendations
+
+
+# ==========================================
+# RECOMMENDATIONS API
+# ==========================================
+
+@app.get("/api/recommendations")
+def get_recommendations():
+
+    inventory_data = {
+    "mode": "demo",
+    "items": demo_inventory()
+}
+
+    items = inventory_data.get("items", [])
+
+    recommendations = generate_recommendations(items)
+
+    total_savings = sum(
+        item["estimated_monthly_savings"]
+        for item in recommendations
+    )
+
+    return {
+        "mode": inventory_data.get("mode", "demo"),
+        "total_recommendations": len(recommendations),
+        "estimated_monthly_savings": round(total_savings, 2),
+        "currency": "INR",
+        "recommendations": recommendations
+    }
