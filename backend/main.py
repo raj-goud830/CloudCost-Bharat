@@ -8,6 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
+from sqlalchemy.orm import Session
+from fastapi import Depends
+
+from database import get_db
+from db_models import ScanHistory, Resource
+
 load_dotenv()
 
 app = FastAPI(title="CloudCost Bharat API", version="1.0.0",
@@ -106,6 +112,38 @@ def demo_dashboard():
         "inventory":demo_inventory()
     }
 
+
+
+@app.get("/api/reports")
+def get_cost_reports():
+    dashboard = demo_dashboard()
+
+    monthly_trend = dashboard.get("monthly_trend", [])
+    category_breakdown = dashboard.get("category_breakdown", [])
+    inventory = dashboard.get("inventory", [])
+
+    total_category_spend = sum(
+        item["spend"] for item in category_breakdown
+    )
+
+    return {
+        "mode": "demo",
+        "currency": dashboard.get("currency", "INR"),
+        "summary": {
+            "monthly_spend": dashboard.get("monthly_spend", 0),
+            "monthly_budget": dashboard.get("monthly_budget", 0),
+            "potential_savings": dashboard.get("potential_savings", 0),
+            "budget_utilization_pct": dashboard.get(
+                "budget_utilization_pct", 0
+            )
+        },
+        "monthly_trend": monthly_trend,
+        "category_breakdown": category_breakdown,
+        "total_category_spend": total_category_spend,
+        "resource_count": len(inventory),
+        "inventory": inventory
+    }
+
  
 @app.get("/api/anomalies")
 def get_cost_anomalies():
@@ -131,6 +169,79 @@ def dashboard():
 def load_demo_data():
     """Return the synthetic portfolio dataset without contacting AWS."""
     return demo_dashboard()
+
+
+
+@app.post("/api/demo/scan")
+def save_demo_scan(db: Session = Depends(get_db)):
+    try:
+        inventory = demo_inventory()
+
+        scan_record = ScanHistory(
+            mode="demo",
+            region="ap-south-1",
+            resources_scanned=len(inventory),
+            findings_count=len(inventory)
+        )
+
+        db.add(scan_record)
+        db.flush()
+
+        for item in inventory:
+            resource_record = Resource(
+                scan_id=scan_record.id,
+                resource_id=item.get("id", ""),
+                resource_type=item.get("type", "Unknown"),
+                name=item.get("name", "Unknown"),
+                region=item.get("region", "ap-south-1"),
+                status=item.get("status", "Unknown"),
+                monthly_cost=item.get("monthly_cost", 0),
+                recommendation=item.get("recommendation", "")
+            )
+            db.add(resource_record)
+
+        db.commit()
+
+        return {
+            "message": "Demo scan saved successfully!",
+            "mode": "demo",
+            "scan_id": scan_record.id,
+            "resources_saved": len(inventory)
+        }
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save demo scan: {str(exc)}"
+        )
+
+
+
+@app.get("/api/scan-history")
+def get_scan_history(db: Session = Depends(get_db)):
+    scans = (
+        db.query(ScanHistory)
+        .order_by(ScanHistory.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": scan.id,
+            "mode": scan.mode,
+            "region": scan.region,
+            "resources_scanned": scan.resources_scanned,
+            "findings_count": scan.findings_count,
+            "created_at": (
+                scan.created_at.isoformat()
+                if scan.created_at else None
+            )
+        }
+        for scan in scans
+    ]
+
+
 
 @app.get("/api/inventory")
 def inventory():
@@ -160,7 +271,10 @@ def assumed_session(role_arn: str, external_id: str, region: str):
         raise HTTPException(status_code=502, detail=f"Could not assume read-only role: {str(exc)}")
 
 @app.post("/api/scan")
-def scan_aws(payload: ScanRequest):
+def scan_aws(
+    payload: ScanRequest,
+    db: Session = Depends(get_db)
+):
     role_arn = payload.role_arn or os.getenv("AWS_ROLE_ARN")
     external_id = payload.external_id or os.getenv("AWS_EXTERNAL_ID")
     if not role_arn or not external_id:
@@ -234,6 +348,43 @@ def scan_aws(payload: ScanRequest):
                         "risk":f"Average CPU {avg:.1f}% over available 7-day datapoints",
                         "recommendation":"Review workload pattern and right-sizing options"
                     })
+
+
+        # Save successful AWS scan to MySQL
+        try:
+            scan_record = ScanHistory(
+                mode="live",
+                region=payload.region,
+                resources_scanned=len(findings),
+                findings_count=len(findings)
+            )
+
+            db.add(scan_record)
+            db.flush()
+
+            for finding in findings:
+                resource_record = Resource(
+                    scan_id=scan_record.id,
+                    resource_id=str(finding.get("id", "")),
+                    resource_type=finding.get("type", "Unknown"),
+                    name=finding.get("name", "Unknown"),
+                    region=finding.get("region", payload.region),
+                    status=finding.get("status", "Unknown"),
+                    monthly_cost=finding.get("monthly_cost"),
+                    recommendation=finding.get("recommendation", "")
+                )
+
+                db.add(resource_record)
+
+            db.commit()
+
+        except Exception as db_error:
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save scan results: {str(db_error)}"
+            )
+
 
         return {"mode":"live","region":payload.region,"scanned_at":now.isoformat(),
                 "resources_scanned":len(findings),"findings":findings,
